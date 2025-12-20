@@ -1,0 +1,35 @@
+autorace_core_tank:
+  ros__parameters:
+    topics.color_image: /color/image
+    topics.depth_image: /depth/image
+    topics.depth_camera_info: /depth/camera_info
+    topics.cmd_vel: /cmd_vel
+    topics.debug_image: /autorace_core_tank/debug_image
+
+    pid.kp: 6.5
+    pid.ki: 0.35
+    pid.kd: 0.20
+    pid.integral_limit: 1.0
+
+    control.linear_velocity_max: 1.2
+    control.linear_velocity_min: 0.20
+    control.angular_velocity_max: 2.2
+    control.speed_drop_by_error: 0.85
+    control.speed_drop_by_turn: 0.55
+
+    safety.robot_half_width_m: 0.070
+    safety.margin_m: 0.020
+    safety.min_lane_width_m: 0.22
+    safety.stop_on_detection_loss: true
+
+    vision.roi_y_start_ratio: 0.55
+    vision.num_sample_rows: 18
+    vision.row_band_height: 2
+
+    vision.yellow_hsv_lower: [18, 80, 80]
+    vision.yellow_hsv_upper: [40, 255, 255]
+    vision.white_hsv_lower: [0, 0, 210]
+    vision.white_hsv_upper: [179, 45, 255]
+
+    vision.morph_kernel: 5
+    vision.debug_publish: true
