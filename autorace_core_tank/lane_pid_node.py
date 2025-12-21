@@ -94,62 +94,52 @@ class SimpleController(Node):
         #cv2.imshow('HSV', combined_mask)
         
         #Настройки 
-        rect_w = 400
-        rect_h = 50
-        left_center = (224, 370)    
-        right_center = (624, 370)   
+        drive_speed = 0.3
+        rotation_speed = 4
+        img_width = combined_mask.shape[1]
+        row = combined_mask[-10, :]
 
-        reference_rotation_speed = 1
-        drive_speed = 0.1
-       
-
+        center_x = combined_mask.shape[1] // 2
+        white_indices = np.where(row==255)[0]
+        if len(white_indices[white_indices < center_x]):
+            left_index = white_indices[white_indices < center_x][-1]
+        else:
+            left_index = 0
         
-        def get_roi(center_x, center_y, width, height):
-            half_w = width // 2
-            half_h = height // 2
-            x1 = center_x - half_w
-            x2 = center_x + half_w
-            y1 = center_y - half_h
-            y2 = center_y + half_h
-            return y1, y2, x1, x2  # (y_top, y_bottom, x_left, x_right)
+        if len(white_indices[white_indices > center_x]):
+            right_index = white_indices[white_indices > center_x][0]
+        else:
+            right_index = img_width
 
-     
-        left_roi = get_roi(left_center[0], left_center[1], rect_w, rect_h)
-        right_roi = get_roi(right_center[0], right_center[1], rect_w, rect_h)
+        pid_center = (left_index + right_index)//2
+        diff = (center_x - pid_center) / abs(right_index - left_index)
+
+
+        rotation_speed *= diff
+        drive_speed *= 1 - abs(diff) * 2
+        
+        if right_index == img_width and left_index == 0:
+            rotation_speed = -0.3
+            drive_speed = 0
+        
+        
+
 
   
-        area = rect_w * rect_h
-        left_sum = combined_mask[left_roi[0]:left_roi[1], left_roi[2]:left_roi[3]].sum() / (area * 255)
-        right_sum = combined_mask[right_roi[0]:right_roi[1], right_roi[2]:right_roi[3]].sum() / (area * 255)
+    
 
- 
+
         demonstration = cv2.cvtColor(combined_mask, cv2.COLOR_GRAY2BGR)
-
-        cv2.putText(demonstration, f"{left_sum:.2f}",
-                    org=(left_center[0] - rect_w // 2, left_center[1] - rect_h // 2 - 10),
-                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1.0,
-                    color=(0, 0, 255), thickness=2)
-        cv2.putText(demonstration, f"{right_sum:.2f}",
-                    org=(right_center[0] - rect_w // 2, right_center[1] - rect_h // 2 - 10),
-                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1.0,
-                    color=(0, 0, 255), thickness=2)
-
-        cv2.rectangle(demonstration,
-                    (left_center[0] - rect_w // 2, left_center[1] - rect_h // 2),
-                    (left_center[0] + rect_w // 2, left_center[1] + rect_h // 2),
-                    (0, 0, 255), thickness=5)
-        cv2.rectangle(demonstration,
-                    (right_center[0] - rect_w // 2, right_center[1] - rect_h // 2),
-                    (right_center[0] + rect_w // 2, right_center[1] + rect_h // 2),
-                    (0, 0, 255), thickness=5)
+        cv2.circle(demonstration, (left_index, combined_mask.shape[0]-10), radius = 20, color=[0, 0, 255], thickness=10)
+        cv2.circle(demonstration, (right_index, combined_mask.shape[0]-10), radius = 20, color=[0, 0, 255],thickness=10)
+        cv2.circle(demonstration, (pid_center, combined_mask.shape[0]-10), radius = 10, color=[0, 255, 0],thickness=10)
+        cv2.circle(demonstration, (center_x, combined_mask.shape[0]-10), radius = 10, color=[255, 0, 0],thickness=10)
 
         cv2.imshow('PID', demonstration)
-        
-        rotation = (-left_sum + right_sum)
-        drive_speed *= 1 - abs(rotation)
+      
 
 
-        return drive_speed, rotation * reference_rotation_speed
+        return drive_speed, rotation_speed
 
 
     def destroy_node(self) -> None:
