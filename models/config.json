@@ -1,0 +1,8 @@
+{
+  "model_name": "shufflenet",
+  "dataset": "GTSRB",
+  "num_classes": 43,
+  "round": 11,
+  "strategy": "multi_krum",
+  "architecture": "ShuffleNet"
+}

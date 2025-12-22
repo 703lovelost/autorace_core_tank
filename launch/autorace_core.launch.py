@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -19,6 +18,13 @@ def generate_launch_description() -> LaunchDescription:
             "params_file",
             default_value=default_params,
             description="Path to a YAML file with autorace_core_tank parameters"
+        ),
+        Node(
+            package="autorace_core_tank",
+            executable="sign_detector",
+            name="sign_detector",
+            output="screen",
+            parameters=[params_file],
         ),
         Node(
             package="autorace_core_tank",

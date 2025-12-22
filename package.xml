@@ -1,15 +1,16 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>autorace_core_tank</name>
-  <version>0.0.1</version>
+  <version>0.0.2</version>
   <description>PID lane following controller for AutoRace tank robot using RGB+Depth camera.</description>
-  <maintainer email="user@local">AutoRace User</maintainer>
+  <maintainer email="tank@g.nsu.ru">TANK</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>cv_bridge</exec_depend>

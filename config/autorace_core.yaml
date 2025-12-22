@@ -6,6 +6,12 @@ autorace_core_tank:
     topics.cmd_vel: /cmd_vel
     topics.debug_image: /autorace_core_tank/debug_image
 
+    sign.model_path: ""
+    sign.conf_threshold: 0.65
+    sign.turn_ticks: 18
+    sign.turn_angular_speed: 2.5
+    sign.turn_linear_speed: 0.05
+
     pid.kp: 6.5
     pid.ki: 0.35
     pid.kd: 0.20
@@ -33,3 +39,16 @@ autorace_core_tank:
 
     vision.morph_kernel: 5
     vision.debug_publish: true
+
+sign_detector:
+  ros__parameters:
+    topics.color_image: /color/image
+    topics.sign_detections: /autorace_core_tank/sign_detections
+    topics.sign_debug_image: /autorace_core_tank/sign_debug_image
+
+    sign.model_path: ""
+    sign.conf_threshold: 0.65
+    sign.min_area: 2000
+    sign.circularity_min: 0.6
+    sign.circularity_max: 1.2
+    sign.input_size: 32
