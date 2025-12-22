@@ -21,6 +21,9 @@ class SimpleController(Node):
         self.saved = False
         self.state = 0
         self.turn_sign = None
+        self.last_lane_left = 0
+        self.last_lane_right = 0
+        self.last_sign_center = 0
 
         # Параметры топиков (можно оставить по умолчанию)
         self.declare_parameter("topics.color_image", "/color/image")
@@ -94,146 +97,95 @@ class SimpleController(Node):
         img_width = hsv_image.shape[1]
         center_x = hsv_image.shape[1] // 2
         
-        def lane_detector():
-                yellow_mask = cv2.inRange(hsv_image, np.array([20, 100, 100]), np.array([30, 255, 255]))
+        def lane_detector(demonstration):
+            yellow_mask = cv2.inRange(hsv_image, np.array([20, 100, 100]), np.array([30, 255, 255]))
 
-                white_mask = cv2.inRange(hsv_image, np.array([0, 0, 200]), np.array([180, 30, 255]))
+            white_mask = cv2.inRange(hsv_image, np.array([0, 0, 200]), np.array([180, 30, 255]))
 
-                combined_mask = cv2.bitwise_or(yellow_mask, white_mask)
-                row = combined_mask[-10, :]
-                
-                white_indices = np.where(row==255)[0]
+            combined_mask = cv2.bitwise_or(yellow_mask, white_mask)
+            row = combined_mask[-10, :]
+            
+            white_indices = np.where(row==255)[0]
 
-                if len(white_indices[white_indices < center_x]):
-                    left_index = white_indices[white_indices < center_x][-1]
-                else:
-                    left_index = 0
-                
-                if len(white_indices[white_indices > center_x]):
-                    right_index = white_indices[white_indices > center_x][0]
-                else:
-                    right_index = img_width
-                
-                demonstration = cv2.cvtColor(combined_mask, cv2.COLOR_GRAY2BGR)
+            if len(white_indices[white_indices < center_x]):
+                left_index = white_indices[white_indices < center_x][-1]
+            else:
+                left_index = 0
+            
+            if len(white_indices[white_indices > center_x]):
+                right_index = white_indices[white_indices > center_x][0]
+            else:
+                right_index = img_width
 
-                depth_image = self._latest_depth
-                depth_demonstration = cv2.cvtColor(depth_image.copy(), cv2.COLOR_GRAY2BGR)
-                
-                region = depth_image[400:480, left_index:right_index]
-                if len(region[region > 0]):
-                    minvobl = region[region > 0].min()
-                else:
-                    minvobl = 1
-
+            
+            if not (demonstration is None):
                 pid_center = (left_index + right_index)//2
-                cv2.circle(demonstration, (left_index, combined_mask.shape[0]-10), radius = 20, color=[0, 0, 255], thickness=10)
-                cv2.circle(demonstration, (right_index, combined_mask.shape[0]-10), radius = 20, color=[0, 0, 255],thickness=10)
+                cv2.circle(demonstration, (max(left_index, center_x - 300), combined_mask.shape[0]-10), radius = 20, color=[0, 0, 255], thickness=10)
+                cv2.circle(demonstration, (min(right_index, center_x + 300), combined_mask.shape[0]-10), radius = 20, color=[0, 0, 255],thickness=10)
                 cv2.circle(demonstration, (pid_center, combined_mask.shape[0]-10), radius = 10, color=[0, 255, 0],thickness=10)
                 cv2.circle(demonstration, (center_x, combined_mask.shape[0]-10), radius = 10, color=[255, 0, 0],thickness=10)
-
-                mask = np.any(demonstration != [0, 0, 0], axis=-1)
-                depth_demonstration[mask] = demonstration[mask]
-
-                # === ОБНАРУЖЕНИЕ И КЛАССИФИКАЦИЯ ЗНАКА ПОВОРОТА ===
-                sign_label = None
-                sign_bbox = None  # (x, y, w, h)
-
-                frame = self._latest_bgr
-                hsv = hsv_image
-
-                # Маска для синего (дорожные знаки)
-                lower_blue = np.array([100, 100, 50])
-                upper_blue = np.array([130, 255, 255])
-                blue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
-
-                # Очистка
-                kernel = np.ones((5, 5), np.uint8)
-                blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
-                blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel)
-
-                if self.turn_sign is None:
-                    # Найти контуры
-                    contours, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-                    if contours:
-                        # Самый большой контур
-                        largest = max(contours, key=cv2.contourArea)
-                        area = cv2.contourArea(largest)
-                        
-                        if area > 2000:
-                            # === ПРОВЕРКА НА КРУГЛОСТЬ ===
-                            perimeter = cv2.arcLength(largest, True)
-                            if perimeter == 0:
-                                circularity = 0
-                            else:
-                                circularity = 4 * np.pi * area / (perimeter ** 2)
-                            
-                            # Допустимый диапазон круглости
-                            if 0.6 <= circularity <= 1.2:
-                                x, y, w, h = cv2.boundingRect(largest)
-                                roi = frame[y:y+h, x:x+w]
-
-                                try:
-                                    if template_left is None or template_right is None:
-                                        self.get_logger().error("Шаблоны left_sign.png или right_sign.png не загружены!")
-                                    else:
-                                        # Приведём ROI и шаблоны к одинаковому размеру
-                                        roi_resized = cv2.resize(roi, (64, 64), interpolation=cv2.INTER_AREA)
-                                        tmpl_l = cv2.resize(template_left, (64, 64), interpolation=cv2.INTER_AREA)
-                                        tmpl_r = cv2.resize(template_right, (64, 64), interpolation=cv2.INTER_AREA)
-
-                                        # В grayscale
-                                        roi_gray = cv2.cvtColor(roi_resized, cv2.COLOR_BGR2GRAY)
-                                        tmpl_l_gray = cv2.cvtColor(tmpl_l, cv2.COLOR_BGR2GRAY)
-                                        tmpl_r_gray = cv2.cvtColor(tmpl_r, cv2.COLOR_BGR2GRAY)
-
-                                        # Сравнение
-                                        res_l = cv2.matchTemplate(roi_gray, tmpl_l_gray, cv2.TM_CCOEFF_NORMED)
-                                        res_r = cv2.matchTemplate(roi_gray, tmpl_r_gray, cv2.TM_CCOEFF_NORMED)
-
-                                        score_l = float(res_l[0, 0])
-                                        score_r = float(res_r[0, 0])
-
-                                        self.get_logger().info(f"score left {score_l:.3f}, score right {score_r:.3f}, circularity: {circularity:.3f}")
-                                        
-                                        if score_l > score_r:
-                                            self.get_logger().info("Обнаружен знак: НАЛЕВО")
-                                            self.turn_sign = 'left'
-                                            sign_color = (255, 0, 0)  # синий
-                                            sign_bbox = (x, y, w, h)
-                                        else:
-                                            self.get_logger().info("Обнаружен знак: НАПРАВО")
-                                            self.turn_sign = 'right'
-                                            sign_color = (0, 255, 0)  # зелёный
-                                            sign_bbox = (x, y, w, h)
-
-                                except Exception as e:
-                                    self.get_logger().error(f"Ошибка при сравнении: {e}")
-                            else:
-                                self.get_logger().debug(f"Контур отклонён: circularity = {circularity:.2f} (должно быть 0.6–1.2)")
-                        else:
-                            self.get_logger().debug("Контур слишком мал (area < 800)")
-                # =============================================
-
-
-                cv2.line(depth_demonstration, (left_index, 400), (right_index, 400), [0, 255, 0], 2)
-                cv2.line(depth_demonstration, (left_index, 480), (right_index, 480), [0, 255, 0], 2)
-                cv2.line(depth_demonstration, (left_index, 480), (left_index, 400), [0, 255, 0], 2)
-                cv2.line(depth_demonstration, (right_index, 480), (right_index, 400), [0, 255 , 0], 2)
                 cv2.putText(
-                    depth_demonstration,
-                    text=f"{minvobl:.2f}",
-                    org=(400, 390),         
+                    demonstration,
+                    text=f"{right_index - left_index}",
+                    org=(center_x, 450),         
                     fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                     fontScale=1.0,
-                    color=(0, 255, 0),
+                    color=(255, 0, 0),
                     thickness=2
                 )
-                
-                cv2.imshow('PID', depth_demonstration)
 
+            
+            return left_index, right_index
+        
+
+        def look_for_sign(demonstration):
+            frame = self._latest_bgr
+            hsv = hsv_image
+
+            # Маска для синего (дорожные знаки)
+            lower_blue = np.array([100, 100, 50])
+            upper_blue = np.array([130, 255, 255])
+            blue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
+
+            # Очистка
+            kernel = np.ones((5, 5), np.uint8)
+            blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
+            blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel)
+
+            # Найти контуры
+            contours, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            if contours:
+                # Самый большой контур
+                largest = max(contours, key=cv2.contourArea)
+                area = cv2.contourArea(largest)
                 
-                return left_index, right_index, minvobl
+                if area > 2000:
+                    # === ПРОВЕРКА НА КРУГЛОСТЬ ===
+                    perimeter = cv2.arcLength(largest, True)
+                    if perimeter == 0:
+                        circularity = 0
+                    else:
+                        circularity = 4 * np.pi * area / (perimeter ** 2)
+                    
+                    # Допустимый диапазон круглости
+                    if 0.6 <= circularity <= 1.2:
+                        x, y, w, h = cv2.boundingRect(largest)
+                        roi = frame[y:y+h, x:x+w]
+                        center = (y+h//2, x+w//2)
+                        cv2.imshow('sign', roi)
+
+                        #self.get_logger().info(f"area {area}, circularity: {circularity:.3f}")
+
+                        if not (demonstration is None):
+                            cv2.line(demonstration, (center[1], 0) ,(center[1], demonstration.shape[0]), [255, 0, 0], 5)
+
+                        return roi, center, area
+                    
+            return None, None, None
+            
+                                    
+        demonstration = self._latest_bgr.copy()
 
         if self.state == 0:
             #терпим на светофоре
@@ -246,15 +198,17 @@ class SimpleController(Node):
                 self.state = 1
                 self.get_logger().info("стартуем!")
 
-            cv2.imshow('PID', green_mask)
         elif self.state == 1:
-            #не пересекаем разметку
+            #хорошо работает на резких поворотах, не работает на перекрёстке
 
             #Настройки 
             drive_speed = 0.1
             rotation_speed = 4
 
-            left_index, right_index, minvobl = lane_detector()
+            left_index, right_index = lane_detector(demonstration)
+
+            left_index = max(left_index, center_x - 300)
+            right_index = min(right_index, center_x + 300)
 
             pid_center = (left_index + right_index)//2
             diff = (center_x - pid_center) / abs(right_index - left_index)
@@ -268,46 +222,43 @@ class SimpleController(Node):
                         rotation_speed = 0.3
                     drive_speed = 0
             
+            crop, center, area = look_for_sign(demonstration)
 
-            if minvobl < 0.10:
+            if not (center is None):
+                self.get_logger().info("знак найден, ровняемся на него")
                 self.state = 2
-                self.get_logger().info("смотрим право")
- 
-
-        elif self.state == 2:
-            left_index, right_index, minvobl = lane_detector()
-
-            drive_speed = 0
-            rotation_speed = -0.5
-            if minvobl > 0.15:
-                if right_index != img_width:
-                    self.state = 3
-                    self.get_logger().info("смотрим на препятствие")
-                else:
-                    self.state = 1
-                    self.get_logger().info("поехали!")
-
-        elif self.state == 3:
-            left_index, right_index, minvobl = lane_detector()
-
-            drive_speed = 0
-            rotation_speed = 0.5
-            if minvobl < 0.15:
-                self.state = 4
-                self.get_logger().info("смотрим лево")
         
-        elif self.state == 4:
-            left_index, right_index, minvobl = lane_detector()
+        elif self.state == 2:
+            #едем на знак
+            rotation_speed = 1
+            drive_speed = 0.05
 
+            crop, center, area = look_for_sign(demonstration)
+
+            if center is None:
+                center = self.last_sign_center
+            else:
+                self.last_sign_center = center
+
+                if area > 20000:
+                    self.get_logger().info("определяем направление знака")
+                    rotation_speed = 0
+                    drive_speed = 0
+                    self.state = 3
+
+            diff = (center_x - center[1]) / img_width
+            rotation_speed *= diff
+        
+        elif self.state == 3:
             drive_speed = 0
-            rotation_speed = 0.5
-            if minvobl > 0.15:
-                self.state = 1
-                self.get_logger().info("поехали!")
+            rotation_speed = 0
+            crop, center, area = look_for_sign(demonstration)
+            #картинки знаков уже загружены в template_left template_right (картинки лежат в папке signs)
+            #в этой стейте надо только определить, в какую сторону поворачивать и запустить другую стейту
 
-            
+
+        cv2.imshow('demonstration', demonstration)
     
-
         return drive_speed, rotation_speed
 
 
