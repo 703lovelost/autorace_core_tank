@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import cv2
 import numpy as np
 import rclpy
@@ -7,10 +6,13 @@ from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
 from typing import Optional, Tuple
+import json
+from std_msgs.msg import String
 
 from ament_index_python.packages import get_package_share_directory
 import os
 
+from autorace_core_tank.sign_classifier import SignClassifier, TURN_LEFT_CLASS_ID, TURN_RIGHT_CLASS_ID
 
 
 class SimpleController(Node):
@@ -23,7 +25,13 @@ class SimpleController(Node):
         self.turn_sign = None
         self.last_lane_left = 0
         self.last_lane_right = 0
+        self.last_sign = None
+        self.last_sign_time = None
         self.last_sign_center = 0
+
+        # Таймер для state 3
+        self.state3_counter = 0
+        self.state3_max = 20  # примерно 20 кадров
 
         # Параметры топиков (можно оставить по умолчанию)
         self.declare_parameter("topics.color_image", "/color/image")
@@ -44,6 +52,13 @@ class SimpleController(Node):
         self._latest_depth: Optional[np.ndarray] = None
         self._got_color = False
         self._got_depth = False
+
+        # Инициализация второго классификатора
+        self.declare_parameter("sign.model_path", "")
+        self.declare_parameter("sign.input_size", 32)
+        model_path = self.get_parameter("sign.model_path").value
+        input_size = self.get_parameter("sign.input_size").value
+        self._sign_classifier = SignClassifier(model_path=model_path or None, device="cpu", input_size=int(input_size))
 
         self.get_logger().info("SimpleController запущен. Показываю изображение в окне 'Color' и 'Depth'.")
 
@@ -175,8 +190,6 @@ class SimpleController(Node):
                         center = (y+h//2, x+w//2)
                         cv2.imshow('sign', roi)
 
-                        #self.get_logger().info(f"area {area}, circularity: {circularity:.3f}")
-
                         if not (demonstration is None):
                             cv2.line(demonstration, (center[1], 0) ,(center[1], demonstration.shape[0]), [255, 0, 0], 5)
 
@@ -188,9 +201,7 @@ class SimpleController(Node):
         demonstration = self._latest_bgr.copy()
 
         if self.state == 0:
-            #терпим на светофоре
             threshold = 100
-
             drive_speed = 0
             rotation_speed = 0
             green_mask = cv2.inRange(hsv_image, np.array([45, 50, 50]), np.array([75, 255, 255]))
@@ -199,9 +210,6 @@ class SimpleController(Node):
                 self.get_logger().info("стартуем!")
 
         elif self.state == 1:
-            #хорошо работает на резких поворотах, не работает на перекрёстке
-
-            #Настройки 
             drive_speed = 0.1
             rotation_speed = 4
 
@@ -229,33 +237,66 @@ class SimpleController(Node):
                 self.state = 2
         
         elif self.state == 2:
-            #едем на знак
             rotation_speed = 1
             drive_speed = 0.05
 
+            left_index, right_index = lane_detector(demonstration)
+            left_index = max(left_index, center_x - 300)
+            right_index = min(right_index, center_x + 300)
+            pid_center = (left_index + right_index)//2
+            diff = (center_x - pid_center) / abs(right_index - left_index)
+            rotation_speed *= diff
+            drive_speed *= 1 - (abs(diff) + 0.2) * 2
+
+            if not (self.turn_sign is None):
+                if right_index == img_width and left_index == 0:
+                    if self.turn_sign == 'right':
+                        rotation_speed = -0.3
+                    else:
+                        rotation_speed = 0.3
+                    drive_speed = 0
+
             crop, center, area = look_for_sign(demonstration)
 
-            if center is None:
-                center = self.last_sign_center
-            else:
+            if center is not None:
                 self.last_sign_center = center
-
                 if area > 20000:
                     self.get_logger().info("определяем направление знака")
                     rotation_speed = 0
                     drive_speed = 0
                     self.state = 3
 
-            diff = (center_x - center[1]) / img_width
-            rotation_speed *= diff
-        
         elif self.state == 3:
             drive_speed = 0
             rotation_speed = 0
             crop, center, area = look_for_sign(demonstration)
-            #картинки знаков уже загружены в template_left template_right (картинки лежат в папке signs)
-            #в этой стейте надо только определить, в какую сторону поворачивать и запустить другую стейту
+            if crop is not None:
+                cls, label, score = self._sign_classifier.predict(crop)
+                self.get_logger().info(f"sign class: {cls}, score: {score:.2f}")
+                if cls == TURN_LEFT_CLASS_ID:
+                    self.turn_sign = 'left'
+                elif cls == TURN_RIGHT_CLASS_ID:
+                    self.turn_sign = 'right'
+                else:
+                    self.turn_sign = None
 
+            self.state3_counter += 1
+            if self.turn_sign is not None or self.state3_counter >= self.state3_max:
+                if self.turn_sign is None:
+                    self.get_logger().info("не смогли определить знак, продолжаем движение")
+                else:
+                    self.get_logger().info(f"выполняем поворот: {self.turn_sign}")
+                self.state = 4
+                self.state3_counter = 0
+
+        elif self.state == 4:
+            drive_speed = 0.0
+            if self.turn_sign == 'left':
+                rotation_speed = 0.3
+            elif self.turn_sign == 'right':
+                rotation_speed = -0.3
+            else:
+                rotation_speed = 0.0
 
         cv2.imshow('demonstration', demonstration)
     
@@ -268,12 +309,10 @@ class SimpleController(Node):
 
 
 def main() -> None:
-    # Получаем путь к папке пакета
     pkg_share = get_package_share_directory('autorace_core_tank')
     left_img_path = os.path.join(pkg_share, 'signs', 'left_sign.png')
     right_img_path = os.path.join(pkg_share, 'signs', 'right_sign.png')
 
-    # Загружаем
     global template_left
     global template_right 
     template_left = cv2.imread(left_img_path)
