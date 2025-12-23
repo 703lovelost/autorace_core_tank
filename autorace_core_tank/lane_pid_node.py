@@ -8,9 +8,61 @@ from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
 from typing import Optional, Tuple
 
+from std_msgs.msg import String
+
 from ament_index_python.packages import get_package_share_directory
 import os
 
+
+def detect_turn_direction(crop, brightness_threshold=120):
+    """
+    Определяет направление поворота: больше НЕ-синего (стрелка) → поворот в эту сторону.
+    """
+    crop_mid_vertical = crop.shape[0] // 2
+    crop = crop[0:crop_mid_vertical, :]
+
+    # Работаем только с цветным изображением
+    if len(crop.shape) != 3 or crop.shape[2] != 3:
+        raise ValueError("Ожидается цветное BGR изображение")
+
+    # BGR: [B, G, R]
+    B = crop[:, :, 0].astype(np.float32)
+    G = crop[:, :, 1].astype(np.float32)
+    R = crop[:, :, 2].astype(np.float32)
+
+    # "Не синий" = где G или R заметно выше B, или просто высокая сумма G+R
+    # Используем: score = G + R (на стрелке — высоко, на синем фоне — низко)
+    not_blue_score = G + R  # можно также: (G + R) / (B + 1) — но это сложнее
+
+    # Бинаризуем по порогу (теперь порог для G+R)
+    _, binary = cv2.threshold(not_blue_score.astype(np.uint8), brightness_threshold, 255, cv2.THRESH_BINARY)
+
+    h, w = binary.shape
+    mid = w // 2
+
+    left_sum = np.sum(binary[:, :mid])
+    right_sum = np.sum(binary[:, mid:])
+
+    confidence = abs(left_sum - right_sum) / (left_sum + right_sum + 1e-6)
+
+    return ('left' if left_sum > right_sum else 'right'), confidence
+
+
+def detect_red_sign(hsv_image, depth_image, demonstration):
+    mask1 = cv2.inRange(hsv_image, np.array((0, 120, 70)), np.array((10, 255, 255)))
+    mask2 = cv2.inRange(hsv_image, np.array((170, 120, 70)), np.array((179, 255, 255)))
+    mask_red = cv2.bitwise_or(mask1, mask2)
+
+    depth_mask = cv2.inRange(depth_image, 0.01, 0.3)
+
+    final_mask = cv2.bitwise_and(mask_red, depth_mask)
+
+    demonstration[final_mask > 0] = [0, 255, 0]
+    
+    if (final_mask.sum() / 255) > 1000:
+        return True
+    else:
+        return False
 
 
 class SimpleController(Node):
@@ -24,6 +76,7 @@ class SimpleController(Node):
         self.last_lane_left = 0
         self.last_lane_right = 0
         self.last_sign_center = 0
+        self.finished = False
 
         # Параметры топиков (можно оставить по умолчанию)
         self.declare_parameter("topics.color_image", "/color/image")
@@ -39,13 +92,15 @@ class SimpleController(Node):
         self._depth_sub = self.create_subscription(Image, depth_topic, self._on_depth, 10)
         self._cmd_pub = self.create_publisher(Twist, cmd_vel_topic, 10)
 
+        self.finish_pub = self.create_publisher(String, 'robot_finish', 10)
+
+
         # Хранилище последних изображений
         self._latest_bgr: Optional[np.ndarray] = None
         self._latest_depth: Optional[np.ndarray] = None
         self._got_color = False
         self._got_depth = False
 
-        self.get_logger().info("SimpleController запущен. Показываю изображение в окне 'Color' и 'Depth'.")
 
     def _on_color(self, msg: Image) -> None:
         try:
@@ -173,12 +228,12 @@ class SimpleController(Node):
                         x, y, w, h = cv2.boundingRect(largest)
                         roi = frame[y:y+h, x:x+w]
                         center = (y+h//2, x+w//2)
-                        cv2.imshow('sign', roi)
 
                         #self.get_logger().info(f"area {area}, circularity: {circularity:.3f}")
 
                         if not (demonstration is None):
-                            cv2.line(demonstration, (center[1], 0) ,(center[1], demonstration.shape[0]), [255, 0, 0], 5)
+                            cv2.rectangle(demonstration, (x, y), (x+w, y+h), [255, 0, 0], 5)
+                            #cv2.line(demonstration, (center[1], 0) ,(center[1], demonstration.shape[0]), [255, 0, 0], 5)
 
                         return roi, center, area
                     
@@ -253,8 +308,80 @@ class SimpleController(Node):
             drive_speed = 0
             rotation_speed = 0
             crop, center, area = look_for_sign(demonstration)
-            #картинки знаков уже загружены в template_left template_right (картинки лежат в папке signs)
-            #в этой стейте надо только определить, в какую сторону поворачивать и запустить другую стейту
+
+            direction, confidence = detect_turn_direction(crop)
+
+            if direction == 'left':
+                self.get_logger().info(f"знак показывает налево")
+                self.state = 4
+            else:
+                self.get_logger().info(f"знак показывает направо")
+                self.state = 5
+                
+            
+        elif self.state == 4:
+            #поворот налево
+            drive_speed = 0.3
+            rotation_speed = 4
+
+            left_index, right_index = lane_detector(demonstration)
+
+            if left_index == 0 and right_index == img_width:
+                drive_speed = 0.05
+                rotation_speed = 0.5
+            
+            else:
+                left_index = max(left_index, center_x - 300)
+                right_index = min(right_index, center_x + 300)
+
+                pid_center = (left_index + right_index)//2
+                diff = (center_x - pid_center) / abs(right_index - left_index)
+                rotation_speed *= diff
+                drive_speed *= 1 - (abs(diff) + 0.2) * 2
+
+            if detect_red_sign(hsv_image, self._latest_depth, demonstration):
+                self.get_logger().info(f"приехали")
+                self.state = 42
+
+            
+
+        elif self.state == 5:
+            #поворот направо
+            drive_speed = 0.3
+            rotation_speed = 4
+
+            left_index, right_index = lane_detector(demonstration)
+
+            if left_index == 0 and right_index == img_width:
+                drive_speed = 0.05
+                rotation_speed = -0.5
+            
+            else:
+                left_index = max(left_index, center_x - 300)
+                right_index = min(right_index, center_x + 300)
+
+                pid_center = (left_index + right_index)//2
+                diff = (center_x - pid_center) / abs(right_index - left_index)
+                rotation_speed *= diff
+                drive_speed *= 1 - (abs(diff) + 0.2) * 2
+
+            if detect_red_sign(hsv_image, self._latest_depth, demonstration):
+                self.get_logger().info(f"приехали")
+                self.state = 42
+        
+        elif self.state == 42:
+            drive_speed = 0
+            rotation_speed = 0
+
+            detect_red_sign(hsv_image, self._latest_depth, demonstration)
+            if not self.finished:
+                msg = String()
+                msg.data = 'команда ТАНК получает заслуженную 4'
+                self.finish_pub.publish(msg)
+                self.finished = True
+
+
+
 
 
         cv2.imshow('demonstration', demonstration)
