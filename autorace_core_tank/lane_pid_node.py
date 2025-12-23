@@ -376,7 +376,7 @@ class SimpleController(Node):
             detect_red_sign(hsv_image, self._latest_depth, demonstration)
             if not self.finished:
                 msg = String()
-                msg.data = 'команда ТАНК получает заслуженную 4'
+                msg.data = 'ТАНК'
                 self.finish_pub.publish(msg)
                 self.finished = True
 
