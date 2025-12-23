@@ -336,7 +336,7 @@ class SimpleController(Node):
                 
         # State: 4 - поворот налево. Немного газанем.
         elif self.state == 4:
-            drive_speed = 0.3
+            drive_speed = 0.1
             rotation_speed = 4
 
             left_index, right_index = lane_detector(demonstration)
@@ -360,7 +360,7 @@ class SimpleController(Node):
             
         # State: 5 - поворот направо. Немного газанем.
         elif self.state == 5:
-            drive_speed = 0.3
+            drive_speed = 0.1
             rotation_speed = 4
 
             left_index, right_index = lane_detector(demonstration)
