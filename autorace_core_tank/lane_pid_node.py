@@ -30,11 +30,10 @@ def detect_turn_direction(crop, brightness_threshold=120):
     G = crop[:, :, 1].astype(np.float32)
     R = crop[:, :, 2].astype(np.float32)
 
-    # "Не синий" = где G или R заметно выше B, или просто высокая сумма G+R
-    # Используем: score = G + R (на стрелке — высоко, на синем фоне — низко)
-    not_blue_score = G + R  # можно также: (G + R) / (B + 1) — но это сложнее
+    # Смотрим, где G или R заметно выше B, или просто высокая сумма G+R (не синие цвета).
+    not_blue_score = G + R
 
-    # Бинаризуем по порогу (теперь порог для G+R)
+    # Бинаризуем по порогу
     _, binary = cv2.threshold(not_blue_score.astype(np.uint8), brightness_threshold, 255, cv2.THRESH_BINARY)
 
     h, w = binary.shape
@@ -49,6 +48,9 @@ def detect_turn_direction(crop, brightness_threshold=120):
 
 
 def detect_red_sign(hsv_image, depth_image, demonstration):
+    """
+    Определяет точку останова по маскам глубины (нахождение вблизи знака) и цвету знака (порог по красному)
+    """
     mask1 = cv2.inRange(hsv_image, np.array((0, 120, 70)), np.array((10, 255, 255)))
     mask2 = cv2.inRange(hsv_image, np.array((170, 120, 70)), np.array((179, 255, 255)))
     mask_red = cv2.bitwise_or(mask1, mask2)
@@ -78,7 +80,7 @@ class SimpleController(Node):
         self.last_sign_center = 0
         self.finished = False
 
-        # Параметры топиков (можно оставить по умолчанию)
+        # Параметры топиков
         self.declare_parameter("topics.color_image", "/color/image")
         self.declare_parameter("topics.depth_image", "/depth/image")
         self.declare_parameter("topics.cmd_vel", "/cmd_vel")
@@ -94,7 +96,6 @@ class SimpleController(Node):
 
         self.finish_pub = self.create_publisher(String, 'robot_finish', 10)
 
-
         # Хранилище последних изображений
         self._latest_bgr: Optional[np.ndarray] = None
         self._latest_depth: Optional[np.ndarray] = None
@@ -103,6 +104,9 @@ class SimpleController(Node):
 
 
     def _on_color(self, msg: Image) -> None:
+        """
+        Callback по цвету.
+        """
         try:
             self._latest_bgr = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
             self._got_color = True
@@ -111,6 +115,9 @@ class SimpleController(Node):
             self.get_logger().error(f"Ошибка конвертации color: {e}")
 
     def _on_depth(self, msg: Image) -> None:
+        """
+        Callback по глубине.
+        """
         try:
             if msg.encoding in ("32FC1", "32FC"):
                 depth = self._bridge.imgmsg_to_cv2(msg, desired_encoding="32FC1")
@@ -126,33 +133,39 @@ class SimpleController(Node):
             self.get_logger().error(f"Ошибка конвертации depth: {e}")
 
     def _try_process(self) -> None:
-        """Вызывается при получении хотя бы одного из изображений. Для синхронной обработки — оба должны быть."""
+        """
+        Вызывается при получении хотя бы одного из изображений. Для синхронной обработки — оба должны быть.
+        """
         if self._latest_bgr is not None and self._latest_depth is not None:
             # Отображаем изображения
-            #cv2.imshow("Color", self._latest_bgr)
+            # cv2.imshow("Color", self._latest_bgr)
             # Визуализируем depth как изображение (нормализуем для отображения)
             depth_vis = self._latest_depth.copy()
             depth_vis = np.clip(depth_vis, 0, 5.0) / 5.0 * 255  # до 5 метров
             depth_vis = depth_vis.astype(np.uint8)
             depth_vis = cv2.applyColorMap(depth_vis, cv2.COLORMAP_JET)
-            #cv2.imshow("Depth", depth_vis)
-            cv2.waitKey(1)  # важно для обновления окон OpenCV
+            # cv2.imshow("Depth", depth_vis)
+            cv2.waitKey(1)
 
-            # Вызываем пользовательскую логику
             v, w = self.process_image(self._latest_bgr, self._latest_depth)
 
-            # Публикуем команду
             twist = Twist()
             twist.linear.x = float(v)
             twist.angular.z = float(w)
             self._cmd_pub.publish(twist)
 
     def process_image(self, bgr: np.ndarray, depth: np.ndarray) -> Tuple[float, float]:
+        """
+        Главный метод обработки выходных изображений для корректировки поведения модели.
+        """
         hsv_image = cv2.cvtColor(self._latest_bgr, cv2.COLOR_BGR2HSV)
         img_width = hsv_image.shape[1]
         center_x = hsv_image.shape[1] // 2
         
         def lane_detector(demonstration):
+            """
+            Функция корректировки траектории для нахождения внутри границ.
+            """
             yellow_mask = cv2.inRange(hsv_image, np.array([20, 100, 100]), np.array([30, 255, 255]))
 
             white_mask = cv2.inRange(hsv_image, np.array([0, 0, 200]), np.array([180, 30, 255]))
@@ -171,8 +184,8 @@ class SimpleController(Node):
                 right_index = white_indices[white_indices > center_x][0]
             else:
                 right_index = img_width
-
             
+            # Визуализация границ в демонстрационном окне
             if not (demonstration is None):
                 pid_center = (left_index + right_index)//2
                 cv2.circle(demonstration, (max(left_index, center_x - 300), combined_mask.shape[0]-10), radius = 20, color=[0, 0, 255], thickness=10)
@@ -188,12 +201,14 @@ class SimpleController(Node):
                     color=(255, 0, 0),
                     thickness=2
                 )
-
             
             return left_index, right_index
         
 
         def look_for_sign(demonstration):
+            """
+            Функция уточнения знака на демонстрационном окне.
+            """
             frame = self._latest_bgr
             hsv = hsv_image
 
@@ -216,7 +231,7 @@ class SimpleController(Node):
                 area = cv2.contourArea(largest)
                 
                 if area > 2000:
-                    # === ПРОВЕРКА НА КРУГЛОСТЬ ===
+                    # ПРОВЕРКА НА КРУГЛОСТЬ
                     perimeter = cv2.arcLength(largest, True)
                     if perimeter == 0:
                         circularity = 0
@@ -229,21 +244,22 @@ class SimpleController(Node):
                         roi = frame[y:y+h, x:x+w]
                         center = (y+h//2, x+w//2)
 
-                        #self.get_logger().info(f"area {area}, circularity: {circularity:.3f}")
+                        # self.get_logger().info(f"area {area}, circularity: {circularity:.3f}")
 
                         if not (demonstration is None):
                             cv2.rectangle(demonstration, (x, y), (x+w, y+h), [255, 0, 0], 5)
-                            #cv2.line(demonstration, (center[1], 0) ,(center[1], demonstration.shape[0]), [255, 0, 0], 5)
+                            # cv2.line(demonstration, (center[1], 0) ,(center[1], demonstration.shape[0]), [255, 0, 0], 5)
 
                         return roi, center, area
                     
-            return None, None, None
-            
+            return None, None, None 
                                     
         demonstration = self._latest_bgr.copy()
 
+        # State-машина контроллера.
+        # State: 0 - ждем зеленый сигнал по маске.
         if self.state == 0:
-            #терпим на светофоре
+            # терпим на светофоре
             threshold = 100
 
             drive_speed = 0
@@ -253,10 +269,9 @@ class SimpleController(Node):
                 self.state = 1
                 self.get_logger().info("стартуем!")
 
+        # State: 1 - движение до перекрестка. На пути много резких поворотов, так что избегаем большого ускорения.
         elif self.state == 1:
-            #хорошо работает на резких поворотах, не работает на перекрёстке
-
-            #Настройки 
+            # хорошо работает на резких поворотах, не работает на перекрёстке
             drive_speed = 0.1
             rotation_speed = 4
 
@@ -283,8 +298,8 @@ class SimpleController(Node):
                 self.get_logger().info("знак найден, ровняемся на него")
                 self.state = 2
         
+        # State: 2 - паркуемся у перекрестка, корректируемся на знак.
         elif self.state == 2:
-            #едем на знак
             rotation_speed = 1
             drive_speed = 0.05
 
@@ -304,6 +319,7 @@ class SimpleController(Node):
             diff = (center_x - center[1]) / img_width
             rotation_speed *= diff
         
+        # State: 3 - определяем поворот по маске.
         elif self.state == 3:
             drive_speed = 0
             rotation_speed = 0
@@ -318,9 +334,8 @@ class SimpleController(Node):
                 self.get_logger().info(f"знак показывает направо")
                 self.state = 5
                 
-            
+        # State: 4 - поворот налево. Немного газанем.
         elif self.state == 4:
-            #поворот налево
             drive_speed = 0.3
             rotation_speed = 4
 
@@ -342,11 +357,9 @@ class SimpleController(Node):
             if detect_red_sign(hsv_image, self._latest_depth, demonstration):
                 self.get_logger().info(f"приехали")
                 self.state = 42
-
             
-
+        # State: 5 - поворот направо. Немного газанем.
         elif self.state == 5:
-            #поворот направо
             drive_speed = 0.3
             rotation_speed = 4
 
@@ -369,6 +382,7 @@ class SimpleController(Node):
                 self.get_logger().info(f"приехали")
                 self.state = 42
         
+        # State: 42 - отправляем команду о завершении.
         elif self.state == 42:
             drive_speed = 0
             rotation_speed = 0
@@ -380,14 +394,9 @@ class SimpleController(Node):
                 self.finish_pub.publish(msg)
                 self.finished = True
 
-
-
-
-
         cv2.imshow('demonstration', demonstration)
     
         return drive_speed, rotation_speed
-
 
     def destroy_node(self) -> None:
         cv2.destroyAllWindows()
@@ -395,21 +404,8 @@ class SimpleController(Node):
 
 
 def main() -> None:
-    # Получаем путь к папке пакета
     pkg_share = get_package_share_directory('autorace_core_tank')
-    left_img_path = os.path.join(pkg_share, 'signs', 'left_sign.png')
-    right_img_path = os.path.join(pkg_share, 'signs', 'right_sign.png')
 
-    # Загружаем
-    global template_left
-    global template_right 
-    template_left = cv2.imread(left_img_path)
-    template_right = cv2.imread(right_img_path)
-    if template_left is None or template_right is None:
-        print('cringe didnt find templates')
-        return
-    else:
-        print('yipee found signs')
     rclpy.init()
     node = SimpleController()
     try:
