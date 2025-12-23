@@ -22,7 +22,7 @@ ROS2-пакет управления дифф-приводным роботом 
 cd ~/ros2_ws/src
 git clone https://github.com/703lovelost/autorace_core_tank.git
 cd ..
-colcon build --symlink-install
+colcon build --packages-select autorace_core_tank --symlink-install 
 ```
 
 ## Запуск
