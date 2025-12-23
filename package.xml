@@ -14,6 +14,7 @@
   <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>message_filters</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
 
   <!-- For live parameter tuning UI -->
   <exec_depend>rqt_reconfigure</exec_depend>
